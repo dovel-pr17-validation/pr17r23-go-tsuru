@@ -1,0 +1,16 @@
+.*
+*.conf
+*.md
+*.swp
+*.txt
+*.yaml
+*.yml
+AUTHORS
+CONTRIBUTORS
+Dockerfile
+
+.**/
+**/*_test.go
+test/
+
+!.git/

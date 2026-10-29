@@ -1,0 +1,258 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:5
+        ports: ["27017:27017"]
+      redis:
+        image: redis
+        ports: ["6379:6379"]
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ runner.os }}-gorace-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-gorace-${{ hashFiles('**/go.sum') }}-
+          ${{ runner.os }}-gorace-
+        # This magic line is to restore the timestamps (mtime) for each file based
+        # on the its last commit. This allows Go test cache to reuse results for
+        # tests that depend on fixture files.
+    - run: git ls-tree -r -t --full-name --name-only HEAD | grep -v vendor | xargs -I{} -P4 sh -c 'touch -d $(git log --pretty=format:%cI -1 HEAD -- "{}") "{}"'
+    - run: sudo apt-get update && sudo apt-get install -y xmlsec1
+    - run: make race
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        k8s_version:
+        - "1.33"
+        - "1.34"
+    steps:
+    - uses: actions/checkout@v4
+    - name: Running up Kubernetes (using Minikube)
+      uses: medyagh/setup-minikube@master
+      with:
+        kubernetes-version: "v${{ matrix.k8s_version }}"
+        container-runtime: docker
+        insecure-registry: "10.96.0.0/12"
+        minikube-version: 1.38.1
+    - uses: azure/setup-helm@v1
+      with:
+        version: v3.14.3
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ runner.os }}-goleak-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-goleak-${{ hashFiles('**/go.sum') }}-
+          ${{ runner.os }}-goleak-
+    - name: Run integration tests
+      env:
+        GOPATH: /tmp/go
+        CLUSTER_PROVIDER: minikube
+        DEBUG: "true"
+        TSURU_INTEGRATION_targetaddr: "http://127.0.0.1:8080"
+        TSURU_INTEGRATION_adminuser: "admin@admin.com"
+        TSURU_INTEGRATION_adminpassword: "123456"
+      run: |
+        kubectl --kubeconfig="$HOME/.kube/config" config view --raw --minify --flatten --context=minikube >"$HOME/.kube/tsuru-integration-config" &&
+            chmod 600 "$HOME/.kube/tsuru-integration-config" &&
+            echo "Created $HOME/.kube/tsuru-integration-config"
+        export INTEGRATION_KUBECONFIG="$HOME/.kube/tsuru-integration-config"
+        ./scripts/localkube-integration.sh
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # new-from-merge-base in .golangci.yml needs the history
+    - run: make yamllint
+    - uses: golangci/golangci-lint-action@v8
+      with:
+        version: v2.11.4
+        args: --timeout=10m
+      env:
+        GOROOT: ""
+  govulncheck:
+    runs-on: ubuntu-latest
+    name: Run govulncheck
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - name: Install govulncheck
+      run: go install golang.org/x/vuln/cmd/govulncheck@latest
+    - name: Run govulncheck
+      run: ./misc/govulncheck.sh
+  check-contributors:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: ./misc/check-contributors.sh
+  check-handlers:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - run: ./misc/check-handlers.sh
+  check-events:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - run: ./misc/check-events.sh
+  check-api-doc:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - run: make check-api-doc
+  validate-api-spec:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+    - run: make validate-api-spec
+  verify-codegen:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.26.8"
+    - uses: actions/checkout@v4
+    - uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    - run: go install golang.org/x/tools/cmd/goimports@latest
+    - run: ./hack/verify-codegen.sh
+  docker-image:
+    needs:
+    - test
+    - lint
+    - integration
+    - check-contributors
+    - check-handlers
+    - check-events
+    - check-api-doc
+    - validate-api-spec
+    - verify-codegen
+    - govulncheck
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v1
+    - uses: actions/cache@v4
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+    - uses: Surgo/docker-smart-tag-action@v1
+      id: smarttag
+      with:
+        docker_image: tsuru/api
+        default_branch: main
+        tag_with_sha: "true"
+    - name: Get version from tag
+      id: gittag
+      uses: jimschubert/query-tag-action@v1
+      with:
+        commit-ish: HEAD
+    - uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+    - uses: docker/build-push-action@v2
+      with:
+        context: .
+        build-args: |
+          TSURU_BUILD_VERSION="${{steps.gittag.outputs.tag}}"
+        push: true
+        tags: ${{ steps.smarttag.outputs.tag }}
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache
+        platforms: linux/amd64,linux/arm64
+  publish-release:
+    needs: [docker-image]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/')
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: goreleaser/goreleaser-action@v2
+      with:
+        args: release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish-openapi-specs:
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [validate-api-spec]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-node@v3
+    - name: Install SwaggerHub CLI
+      run: |-
+        npm install -g swaggerhub-cli@0.6.4
+        swaggerhub version
+    - name: yq - portable yaml processor
+      uses: mikefarah/yq@v4.30.6
+    - uses: actions/checkout@v4
+    - name: Update OpenAPI specs on SwaggerHub
+      run: ./misc/swaggerhub-update-api-specs.sh
+      env:
+        SWAGGERHUB_API_KEY: ${{ secrets.SWAGGERHUB_API_KEY }}

@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  tests: true
+
+issues:
+  new-from-merge-base: origin/main
+
+linters:
+  enable:
+  - misspell
+  - modernize
+  disable:
+  - errcheck
+  - staticcheck #TODO: consider removing this and fix issues
+  exclusions:
+    generated: lax
+    presets:
+    - comments
+    - common-false-positives
+    - legacy
+    - std-error-handling
+    paths:
+    - third_party$
+    - builtin$
+    - examples$
+
+formatters:
+  enable:
+  - gofmt
+  - goimports
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+    - third_party$
+    - builtin$
+    - examples$

@@ -1,0 +1,191 @@
+// Copyright 2023 tsuru authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package job
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/tsuru/config"
+	"github.com/tsuru/tsuru/auth"
+	"github.com/tsuru/tsuru/builder"
+	"github.com/tsuru/tsuru/db/storagev2"
+	"github.com/tsuru/tsuru/provision"
+	"github.com/tsuru/tsuru/provision/pool"
+	"github.com/tsuru/tsuru/provision/provisiontest"
+	"github.com/tsuru/tsuru/servicemanager"
+	servicemock "github.com/tsuru/tsuru/servicemanager/mock"
+	_ "github.com/tsuru/tsuru/storage/mongodb"
+	appTypes "github.com/tsuru/tsuru/types/app"
+	authTypes "github.com/tsuru/tsuru/types/auth"
+	jobTypes "github.com/tsuru/tsuru/types/job"
+	"github.com/tsuru/tsuru/types/quota"
+	"golang.org/x/crypto/bcrypt"
+	"gopkg.in/check.v1"
+)
+
+var _ = check.Suite(&S{})
+
+func Test(t *testing.T) {
+	check.TestingT(t)
+}
+
+type S struct {
+	team        authTypes.Team
+	user        *authTypes.User
+	plan        *appTypes.Plan
+	plans       []appTypes.Plan
+	defaultPlan *appTypes.Plan
+	provisioner *provisiontest.JobProvisioner
+	Pool        string
+	mockService servicemock.MockService
+	builder     *builder.MockBuilder
+}
+
+func (s *S) createUserAndTeam(c *check.C) {
+	user := &auth.User{
+		Email: "august@tswift.com",
+		Quota: quota.UnlimitedQuota,
+	}
+	err := user.Create(context.TODO())
+	c.Assert(err, check.IsNil)
+	s.user = &authTypes.User{
+		Email: user.Email,
+		Quota: quota.UnlimitedQuota,
+	}
+	s.team = authTypes.Team{
+		Name:  "tsuruteam",
+		Quota: quota.UnlimitedQuota,
+	}
+}
+
+func (s *S) TearDownSuite(c *check.C) {
+	provision.Unregister("jobProv")
+	storagev2.ClearAllCollections(nil)
+}
+
+func setupMocks(s *S) {
+	servicemock.SetMockService(&s.mockService)
+
+	s.mockService.Team.OnList = func() ([]authTypes.Team, error) {
+		return []authTypes.Team{{Name: s.team.Name}}, nil
+	}
+	s.mockService.Team.OnFindByName = func(name string) (*authTypes.Team, error) {
+		if name == s.team.Name {
+			return &authTypes.Team{Name: s.team.Name}, nil
+		}
+		return nil, authTypes.ErrTeamNotFound
+	}
+	s.mockService.Team.OnFindByNames = func(names []string) ([]authTypes.Team, error) {
+		if len(names) == 1 && names[0] == s.team.Name {
+			return []authTypes.Team{{Name: s.team.Name}}, nil
+		}
+		return []authTypes.Team{}, nil
+	}
+
+	s.mockService.Plan.OnList = func() ([]appTypes.Plan, error) {
+		return s.plans, nil
+	}
+	s.mockService.Plan.OnDefaultPlan = func() (*appTypes.Plan, error) {
+		return s.mockService.Plan.OnFindByName("default-plan")
+	}
+	s.mockService.Plan.OnFindByName = func(name string) (*appTypes.Plan, error) {
+		for _, p := range s.plans {
+			if p.Name == name {
+				return &p, nil
+			}
+		}
+		return nil, appTypes.ErrPlanNotFound
+	}
+	s.mockService.AppQuota.OnGet = func(_ *appTypes.App) (*quota.Quota, error) {
+		return &quota.UnlimitedQuota, nil
+	}
+	s.mockService.TeamQuota.OnGet = func(_ *authTypes.Team) (*quota.Quota, error) {
+		return &quota.UnlimitedQuota, nil
+	}
+	s.mockService.Pool.OnServices = func(pool string) ([]string, error) {
+		return []string{
+			"my",
+			"mysql",
+			"healthcheck",
+		}, nil
+	}
+}
+
+func (s *S) SetUpSuite(c *check.C) {
+	config.Set("log:disable-syslog", true)
+	config.Set("database:driver", "mongodb")
+	config.Set("database:url", "127.0.0.1:27017?maxPoolSize=100")
+	config.Set("database:name", "queue_job_pkg_tests")
+	config.Set("docker:registry", "registry.somewhere")
+	config.Set("auth:hash-cost", bcrypt.MinCost)
+	storagev2.Reset()
+	s.provisioner = &provisiontest.JobProvisioner{
+		FakeProvisioner: provisiontest.ProvisionerInstance,
+	}
+	provision.Register("jobProv", func() (provision.Provisioner, error) {
+		return s.provisioner, nil
+	})
+	provision.DefaultProvisioner = "jobProv"
+}
+
+func (s *S) SetUpTest(c *check.C) {
+	s.provisioner.Reset()
+	storagev2.ClearAllCollections(nil)
+	s.createUserAndTeam(c)
+	s.plans = []appTypes.Plan{
+		{
+			Name:     "c2m1",
+			Memory:   1024,
+			CPUMilli: 2000,
+		},
+		{
+			Name:     "c4m2",
+			Memory:   2048,
+			CPUMilli: 4000,
+		},
+		{
+			Name:     "default-plan",
+			Memory:   1024,
+			CPUMilli: 1000,
+			Default:  true,
+		},
+	}
+	var err error
+	s.Pool = "pool1"
+	opts := pool.AddPoolOptions{Name: s.Pool, Default: true}
+	err = pool.AddPool(context.TODO(), opts)
+	c.Assert(err, check.IsNil)
+	opts = pool.AddPoolOptions{Name: "pool2"}
+	err = pool.AddPool(context.TODO(), opts)
+	c.Assert(err, check.IsNil)
+	err = pool.AppendPoolConstraint(context.TODO(), &pool.PoolConstraint{
+		PoolExpr: "pool2",
+		Field:    pool.ConstraintTypeTeam,
+		Values:   []string{"team-2"},
+	})
+	c.Assert(err, check.IsNil)
+	err = pool.AppendPoolConstraint(context.TODO(), &pool.PoolConstraint{
+		PoolExpr: "pool1",
+		Field:    pool.ConstraintTypePlan,
+		Values:   []string{"default-plan", "c2m1"},
+	})
+	c.Assert(err, check.IsNil)
+	builder.DefaultBuilder = "fake"
+	s.builder = &builder.MockBuilder{
+		OnBuildJob: func(job *jobTypes.Job, opts builder.BuildOpts) (string, error) {
+			return fmt.Sprintf("fake.registry.io/job-%s:latest", job.Name), nil
+		},
+	}
+	builder.Register("fake", s.builder)
+	setupMocks(s)
+	s.defaultPlan, err = s.mockService.Plan.OnDefaultPlan()
+	c.Assert(err, check.IsNil)
+	s.plan, err = s.mockService.Plan.OnFindByName("c4m2")
+	c.Assert(err, check.IsNil)
+	servicemanager.Job, err = JobService()
+	c.Assert(err, check.IsNil)
+}
