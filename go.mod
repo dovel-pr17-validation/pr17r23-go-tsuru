@@ -3,8 +3,8 @@ module github.com/tsuru/tsuru
 go 1.26.8
 
 require (
-	github.com/adhocore/gronx v1.6.6
-	github.com/aws/aws-sdk-go-v2 v1.46.0
+	github.com/adhocore/gronx v1.20.5
+	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/config v1.33.3
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.64.0
 	github.com/bradfitz/go-smtpd v0.0.0-20130623174436-5b56f4f917c7
@@ -78,7 +78,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.37.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.42.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.49.0 // indirect
-	github.com/aws/smithy-go v1.28.1 // indirect
+	github.com/aws/smithy-go v1.28.7 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
